@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Dedupe</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="top-bar">
+        <button id="prev-group">&lt; previous group</button>
+        <button id="dedupe-button" class="dedupe-btn">DE-DUPE!</button>
+        <button id="next-group">next group &gt;</button>
+    </header>
+    <main>
+        <section class="group-view" id="selection-view">
+            <div class="images-grid" id="images-grid">
+                <!-- Images will be added here by script.js -->
+            </div>
+        </section>
+    </main>
+    <footer class="status-bar">
+        <span id="group-score"></span>
+    </footer>
+    <script src="script.js"></script>
+</body>
+</html>
