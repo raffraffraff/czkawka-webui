@@ -65,9 +65,3 @@ Whenever you regenerate the duplicates.json file, make sure you stop/start this 
 
 # DISCLAIMER
 Yeah this should probably be right at the top but... DO NOT TRUST ANY SOFTWARE WITH YOUR ORIGINALS!!! Make a copy of your images and use these programs on the copies. While I have tried to make this program very safe to use (on my own personal photo collection!) I am not responsibile for loss of your images through any bug, accident or misuse. USE WITH A COPY OF YOUR PHOTOS, FOR THE LOVE OF ...
-
-original date and file name (mnt/4TB/Photoprism/originals -duplicates /mnt/4TB/Photoprism/duplicates.json -port 8080
-
-czkawka_cli image -d originals  -g VertGradient -z Lanczos3 -p duplicates.json
-
-```
