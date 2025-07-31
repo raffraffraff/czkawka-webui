@@ -33,13 +33,17 @@ var styleCSS []byte
 var scriptJS []byte
 
 type Image struct {
-	Path         string `json:"path"`
-	Size         int64  `json:"size"`
-	Width        int    `json:"width"`
-	Height       int    `json:"height"`
-	ModifiedDate int64  `json:"modified_date"`
-	Hash         []int  `json:"hash"`
-	Similarity   int    `json:"similarity"`
+	Path         string  `json:"path"`
+	Size         int64   `json:"size"`
+	Width        int     `json:"width"`
+	Height       int     `json:"height"`
+	ModifiedDate int64   `json:"modified_date"`
+	Hash         []int   `json:"hash"`
+	Similarity   int     `json:"similarity"`
+	Duration     float64 `json:"duration,omitempty"`  // Video duration in seconds
+	Codec        string  `json:"codec,omitempty"`     // Video codec (h264, h265, etc.)
+	Bitrate      int64   `json:"bitrate,omitempty"`   // Video bitrate
+	Framerate    float64 `json:"framerate,omitempty"` // Video framerate
 }
 
 type ExifData struct {
@@ -57,6 +61,15 @@ type ImageWithExif struct {
 	Score int `json:"score"`
 }
 
+type VideoMetadata struct {
+	Duration  float64 `json:"duration"`
+	Codec     string  `json:"codec"`
+	Bitrate   int64   `json:"bitrate"`
+	Framerate float64 `json:"framerate"`
+	Width     int     `json:"width"`
+	Height    int     `json:"height"`
+}
+
 type GroupResponse struct {
 	GroupSimilarityScore float64         `json:"group_similarity_score"`
 	Images               []ImageWithExif `json:"images"`
@@ -68,7 +81,9 @@ var (
 	duplicatesFile string
 	port           string
 	tempDir        string
-	cr2Cache       = make(map[string]string) // Map CR2 path to JPG temp path
+	cr2Cache       = make(map[string]string)             // Map CR2 path to JPG temp path
+	videoMetaCache = make(map[string]VideoMetadata)      // Cache video metadata
+	videoPending   = make(map[string]chan VideoMetadata) // Track pending extractions
 )
 
 // Simple XMP Subject extractor
@@ -185,6 +200,145 @@ func convertCR2ToJPG(cr2Path string) (string, error) {
 	log.Printf("Converted CR2 to JPG: %s -> %s", filepath.Base(cr2Path), filepath.Base(jpgPath))
 
 	return jpgPath, nil
+}
+
+// Video detection and metadata functions
+func isVideoFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	videoExts := []string{".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv", ".flv", ".3gp"}
+	for _, videoExt := range videoExts {
+		if ext == videoExt {
+			return true
+		}
+	}
+	return false
+}
+
+// Extract video metadata using ffprobe (if available)
+func getVideoMetadata(path string) (duration float64, codec string, bitrate int64, framerate float64, width int, height int) {
+	// Check cache first
+	if cached, exists := videoMetaCache[path]; exists {
+		log.Printf("Cache HIT for video: %s", filepath.Base(path))
+		return cached.Duration, cached.Codec, cached.Bitrate, cached.Framerate, cached.Width, cached.Height
+	}
+
+	// Check if extraction is already in progress
+	if ch, exists := videoPending[path]; exists {
+		log.Printf("Video metadata extraction in progress for: %s - waiting...", filepath.Base(path))
+		cached := <-ch
+		return cached.Duration, cached.Codec, cached.Bitrate, cached.Framerate, cached.Width, cached.Height
+	}
+
+	// Start extraction in background
+	ch := make(chan VideoMetadata, 1)
+	videoPending[path] = ch
+
+	go func() {
+		defer func() {
+			delete(videoPending, path)
+			close(ch)
+		}()
+
+		log.Printf("Cache MISS for video: %s - extracting metadata in background", filepath.Base(path))
+		metadata := extractVideoMetadataSync(path)
+
+		// Cache the result
+		videoMetaCache[path] = metadata
+		log.Printf("Cached metadata for video: %s", filepath.Base(path))
+
+		// Send result to any waiters
+		ch <- metadata
+	}()
+
+	// Wait for result (first request will wait, subsequent will get from cache)
+	cached := <-ch
+	return cached.Duration, cached.Codec, cached.Bitrate, cached.Framerate, cached.Width, cached.Height
+}
+
+// Synchronous metadata extraction (used by background goroutine)
+func extractVideoMetadataSync(path string) VideoMetadata {
+	var duration float64
+	var codec string
+	var bitrate int64
+	var framerate float64
+	var width, height int
+
+	// Try ffprobe
+	cmd := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path)
+	output, err := cmd.Output()
+	if err != nil {
+		// Return empty metadata on error
+		return VideoMetadata{}
+	}
+
+	// Parse JSON output
+	var result struct {
+		Format struct {
+			Duration string `json:"duration"`
+			Bitrate  string `json:"bit_rate"`
+		} `json:"format"`
+		Streams []struct {
+			CodecType    string `json:"codec_type"`
+			CodecName    string `json:"codec_name"`
+			Duration     string `json:"duration"`
+			AvgFrameRate string `json:"avg_frame_rate"`
+			Width        int    `json:"width"`
+			Height       int    `json:"height"`
+		} `json:"streams"`
+	}
+
+	if err := json.Unmarshal(output, &result); err != nil {
+		return VideoMetadata{}
+	}
+
+	// Extract duration from format
+	if result.Format.Duration != "" {
+		if d, err := strconv.ParseFloat(result.Format.Duration, 64); err == nil {
+			duration = d
+		}
+	}
+
+	// Extract bitrate from format
+	if result.Format.Bitrate != "" {
+		if b, err := strconv.ParseInt(result.Format.Bitrate, 10, 64); err == nil {
+			bitrate = b
+		}
+	}
+
+	// Extract codec, framerate, and dimensions from video stream
+	for _, stream := range result.Streams {
+		if stream.CodecType == "video" {
+			codec = stream.CodecName
+			width = stream.Width
+			height = stream.Height
+
+			// Parse framerate (format: "30/1" or "29.97")
+			if stream.AvgFrameRate != "" && stream.AvgFrameRate != "0/0" {
+				parts := strings.Split(stream.AvgFrameRate, "/")
+				if len(parts) == 2 {
+					if num, err1 := strconv.ParseFloat(parts[0], 64); err1 == nil {
+						if den, err2 := strconv.ParseFloat(parts[1], 64); err2 == nil && den != 0 {
+							framerate = num / den
+						}
+					}
+				} else {
+					if f, err := strconv.ParseFloat(stream.AvgFrameRate, 64); err == nil {
+						framerate = f
+					}
+				}
+			}
+			break // Use first video stream
+		}
+	}
+
+	return VideoMetadata{
+		Duration:  duration,
+		Codec:     codec,
+		Bitrate:   bitrate,
+		Framerate: framerate,
+		Width:     width,
+		Height:    height,
+	}
 }
 
 func cleanupTempFiles() {
@@ -490,8 +644,26 @@ func groupHandler(w http.ResponseWriter, r *http.Request) {
 
 		exif := getExif(img.Path)
 		relativePath := getRelativeImagePath(img.Path)
+
+		// Create a copy of the image to potentially add video metadata
+		imgCopy := img
+
+		// If this is a video file, extract video metadata
+		if isVideoFile(img.Path) {
+			duration, codec, bitrate, framerate, width, height := getVideoMetadata(img.Path)
+			imgCopy.Duration = duration
+			imgCopy.Codec = codec
+			imgCopy.Bitrate = bitrate
+			imgCopy.Framerate = framerate
+			// Update dimensions with actual video resolution
+			if width > 0 && height > 0 {
+				imgCopy.Width = width
+				imgCopy.Height = height
+			}
+		}
+
 		imgWithExif := ImageWithExif{
-			Image:    img,
+			Image:    imgCopy,
 			ExifData: exif,
 		}
 		imgWithExif.Path = relativePath // override path to be relative
@@ -502,9 +674,9 @@ func groupHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// If no images remain after filtering, return 404
+	// If no files remain after filtering, return 404
 	if len(imgsWithPaths) == 0 {
-		http.Error(w, "No images found in group", 404)
+		http.Error(w, "No files found in group", 404)
 		return
 	}
 

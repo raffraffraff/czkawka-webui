@@ -35,6 +35,12 @@ function deleteImage(filePath, wrapper) {
 }
 
 function fetchGroup(idx, callback) {
+    // Show loading indicator if not using callback
+    if (!callback) {
+        document.getElementById('images-grid').innerHTML = '<div style="text-align: center; padding: 40px;"><h2>⏳ Loading...</h2><p>Extracting video metadata, please wait...</p></div>';
+        document.getElementById('group-score').textContent = 'Loading group...';
+    }
+    
     fetch(`/api/group?idx=${idx}`)
         .then(res => {
             if (!res.ok) {
@@ -71,7 +77,7 @@ function navigateToValidGroup(direction) {
             } else {
                 // No valid groups found at all
                 currentGroupIdx = -1;
-                document.getElementById('images-grid').innerHTML = '<div style="text-align: center; padding: 40px;"><h2>🎉 All Done!</h2><p>No more duplicate groups found with multiple images.</p></div>';
+                document.getElementById('images-grid').innerHTML = '<div style="text-align: center; padding: 40px;"><h2>🎉 All Done!</h2><p>No more duplicate groups found with multiple files.</p></div>';
                 document.getElementById('group-score').textContent = 'Deduplication complete!';
             }
             return;
@@ -84,7 +90,7 @@ function navigateToValidGroup(direction) {
                 if (currentGroupIdx > 0) {
                     navigateToValidGroup('prev');
                 } else {
-                    document.getElementById('images-grid').innerHTML = '<div style="text-align: center; padding: 40px;"><h2>🎉 All Done!</h2><p>No more duplicate groups found with multiple images.</p></div>';
+                    document.getElementById('images-grid').innerHTML = '<div style="text-align: center; padding: 40px;"><h2>🎉 All Done!</h2><p>No more duplicate groups found with multiple files.</p></div>';
                     document.getElementById('group-score').textContent = 'Deduplication complete!';
                 }
             } else {
@@ -121,7 +127,19 @@ function navigateToValidGroup(direction) {
 }
 
 function renderGroup(data, idx) {
-    document.getElementById('group-score').textContent = `Group ${idx + 1}: Similarity Score ${data.group_similarity_score.toFixed(2)} (${data.images.length} images)`;
+    const videoCount = data.images.filter(img => /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(img.path)).length;
+    const imageCount = data.images.length - videoCount;
+    
+    let mediaTypeText = '';
+    if (videoCount > 0 && imageCount > 0) {
+        mediaTypeText = ` (${imageCount} images, ${videoCount} videos)`;
+    } else if (videoCount > 0) {
+        mediaTypeText = ` (${videoCount} videos)`;
+    } else {
+        mediaTypeText = ` (${imageCount} images)`;
+    }
+    
+    document.getElementById('group-score').textContent = `Group ${idx + 1}: Similarity Score ${data.group_similarity_score.toFixed(2)}${mediaTypeText}`;
     const grid = document.getElementById('images-grid');
     grid.innerHTML = '';
     
@@ -142,19 +160,30 @@ function renderGroup(data, idx) {
         wrapper.style.maxWidth = '45vw'; // Ensure it never exceeds 50% of viewport width
         wrapper.style.verticalAlign = 'top'; // Align images to top when side by side
         
-        // Image
-        const image = document.createElement('img');
-        image.src = '/images/' + img.path.replace(/^\/+/, '');
-        image.style.width = '100%';
-        image.style.height = 'auto';
-        image.style.display = 'block';
-        image.style.border = '2px solid #ccc';
+        // Media element (image or video)
+        const isVideo = /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(img.path);
+        const media = document.createElement(isVideo ? 'video' : 'img');
+        
+        if (isVideo) {
+            media.controls = true;
+            media.preload = 'metadata';
+            media.src = '/images/' + img.path.replace(/^\/+/, '');
+            // Add poster frame if available (you could generate thumbnails)
+            // media.poster = '/thumbnails/' + img.path.replace(/^\/+/, '').replace(/\.[^.]+$/, '.jpg');
+        } else {
+            media.src = '/images/' + img.path.replace(/^\/+/, '');
+        }
+        
+        media.style.width = '100%';
+        media.style.height = 'auto';
+        media.style.display = 'block';
+        media.style.border = '2px solid #ccc';
         
         // Calculate max height to leave room for header, footer, and EXIF data
         // Assume: top bar ~60px, footer ~60px, EXIF data ~200px, margins ~80px
-        const maxImageHeight = 'calc(100vh - 400px)';
-        image.style.maxHeight = maxImageHeight;
-        image.style.objectFit = 'contain'; // Maintain aspect ratio
+        const maxMediaHeight = 'calc(100vh - 400px)';
+        media.style.maxHeight = maxMediaHeight;
+        media.style.objectFit = 'contain'; // Maintain aspect ratio
         // Trash icon
         const trash = document.createElement('div');
         trash.innerHTML = '✖'; // X mark that can definitely be colored red
@@ -193,9 +222,9 @@ function renderGroup(data, idx) {
             const fullPath = img.original_path || img.path;
             deleteImage(fullPath, wrapper);
         };
-        // Image click logs original path
-        image.onclick = () => {
-            console.log('Image clicked:', img.original_path || img.path);
+        // Media click logs original path
+        media.onclick = () => {
+            console.log('Media clicked:', img.original_path || img.path);
         };
         // Info
         const info = document.createElement('div');
@@ -214,10 +243,20 @@ function renderGroup(data, idx) {
             infoHtml += `<div style='color:#666;font-size:1em;'>Date Taken: ${img.date_taken}</div>`;
         }
         // Dimensions and size
-        infoHtml += `<div style='font-size:1.05em;'>${img.width} × ${img.height} px`;
+        if (isVideo) {
+            infoHtml += `<div style='font-size:1.05em;'>${img.width} × ${img.height} px (Video)`;
+        } else {
+            infoHtml += `<div style='font-size:1.05em;'>${img.width} × ${img.height} px`;
+        }
         if (img.size) {
             let sizeMB = (img.size / (1024*1024)).toFixed(2);
             infoHtml += ` &nbsp;•&nbsp; ${sizeMB} MB`;
+        }
+        // Add video duration if available
+        if (isVideo && img.duration) {
+            const minutes = Math.floor(img.duration / 60);
+            const seconds = Math.floor(img.duration % 60);
+            infoHtml += ` &nbsp;•&nbsp; ${minutes}:${seconds.toString().padStart(2, '0')}`;
         }
         infoHtml += '</div>';
         // Camera Make and Model
@@ -225,11 +264,30 @@ function renderGroup(data, idx) {
             let makeModel = [img.camera_make, img.camera_model].filter(Boolean).join(' ');
             infoHtml += `<div style='color:#666;font-size:0.95em;'>${makeModel}</div>`;
         }
+        
+        // Video-specific metadata
+        if (isVideo) {
+            let videoInfo = [];
+            if (img.codec) {
+                videoInfo.push(`Codec: ${img.codec.toUpperCase()}`);
+            }
+            if (img.bitrate) {
+                const bitrateKbps = Math.round(img.bitrate / 1000);
+                videoInfo.push(`${bitrateKbps} kbps`);
+            }
+            if (img.framerate) {
+                videoInfo.push(`${img.framerate.toFixed(1)} fps`);
+            }
+            if (videoInfo.length > 0) {
+                infoHtml += `<div style='color:#666;font-size:0.95em;'>${videoInfo.join(' • ')}</div>`;
+            }
+        }
+        
         if (!img.has_exif) {
             infoHtml += `<div style='color:red;'>EXIF DATA MISSING</div>`;
         }
         info.innerHTML = infoHtml;
-        wrapper.appendChild(image);
+        wrapper.appendChild(media);
         wrapper.appendChild(info);
         wrapper.appendChild(trash);
         grid.appendChild(wrapper);
